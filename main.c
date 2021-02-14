@@ -65,8 +65,8 @@
 #define TIME_E_HIGH             3
 #define TIME_E_LOW              3
 #define TIME_BOOT_DELAY         3
-
-#define PWM_Cycle               100 // 20 Milli Second Cycle
+/* */
+#define PWM_Cycle               200 // 20 Milli Second Cycle
 #define PWM_TicksPerMs          5
 
 /* */
@@ -87,6 +87,9 @@ int         pwmDutyCycleCount   =   0;
 int         waitingForTimer     =   0;
 int16_t     timerDelayMilliSec  =   0;
 uint16_t    dutyCycleTimerValue =   0;
+uint16_t    potCycleTimerValue  =   0;
+uint16_t    newTimeOut          =   0;
+
 
 void    timerDelay(int16_t waitTime) {
     myTimer             =   0;
@@ -98,35 +101,41 @@ void    timerDelay(int16_t waitTime) {
 /*
 Main application
  */
-//  
-//  Fires every 100us (20 * = 20 Ms) (PWM)
-/*void My_ISR_TMR3(void) {
-    pwmDutyCycleCount++;
-    if (pwmDutyCycleCount > pwmDutyCycle) {
-        pwmDutyCycleCount=0;
-        PWM_PIN_SetLow();
-    }
+void My_ISR_TMR3(void) {
+    
+    TMR3_Stop();
+    PWM_PIN_SetLow();
+    
 }
-*/
+
 void My_ISR_TMR2(void) {
     pwmTimer++;
-    if (pwmTimer > PWM_Cycle) {
-        pwmDutyCycleCount   = 0;
+    if (pwmTimer >= 10) {
+        // PWM_PIN_SetLow();
+    }
+    
+    if ((pwmTimer > PWM_Cycle) || (pwmTimer == 0))  {
         pwmTimer = 0;
+        potCycleTimerValue = dutyCycleTimerValue;
+        // TMR3_Period16BitSet(potCycleTimerValue);
         PWM_PIN_SetHigh();
-        pwmDutyCycle = 4;
+        TMR3_Start();
+        // pwmDutyCycleCount   = 0;
+        // pwmDutyCycle = 4;
     }
 
+    /*
     pwmDutyCycleCount++;
     if (pwmDutyCycleCount > pwmDutyCycle) {
         PWM_PIN_SetLow();
     }
-
+     */ 
     
 }
 void My_ISR_TMR1(void) {
-    /*
+    
     myTimer++;
+    /*
     pwmDutyCycleCount++;
     if (pwmDutyCycleCount > 1) {
         PWM_PIN_SetLow();
@@ -240,17 +249,16 @@ int main(void)
 {
     // initialize the device
     SYSTEM_Initialize();
-    TMR1_SetInterruptHandler(My_ISR_TMR1);
-    TMR1_Start();
-    pwmTimer = 0;
-    TMR2_SetInterruptHandler(My_ISR_TMR2);
-    TMR2_Start();
-/*    TMR3_SetInterruptHandler(My_ISR_TMR3);
-    TMR3_Start();
-    dutyCycleTimerValue = TMR3_Period16BitGet();    //  Set Initial Value
-    */
     myTimer             = 0;
+    TMR1_SetInterruptHandler(My_ISR_TMR1);
+    // TMR1_Start();
+    
+    pwmTimer = -1;
+    TMR2_SetInterruptHandler(My_ISR_TMR2);
+    // TMR2_Start();
     // int displayState    = 0;
+    dutyCycleTimerValue = TMR3_Period16BitGet();
+    TMR3_SetInterruptHandler(My_ISR_TMR3);
 
     //  Initial Delay to wait for the Display to get ready
     
@@ -342,7 +350,9 @@ int main(void)
     }
     */
     int i   = 0;
-    int potPercentage = 0;
+    double potPercentage    = 0;
+    int oldPotPercentage = 0;
+    double   tmpDouble   = 0;
     while (1) {
         ADC1_Initialize();
         ADC1_ChannelSelect(POT_AN0);
@@ -357,10 +367,19 @@ int main(void)
             ADC1_Tasks();   
         }
         potValue = ADC1_ConversionResultGet();
-        potPercentage = (potValue / 10.23) * PWM_TicksPerMs;
-        pwmDutyCycle  = PWM_TicksPerMs + ((PWM_TicksPerMs * potPercentage) / 100);
+        potPercentage = 100 + (potValue / 10.23); // 500 on Pot will give 149%
+                                                  // So 149% of 1ms = 1.49ms
+        
+        if (oldPotPercentage != potPercentage) {
+            oldPotPercentage = potPercentage;
+            tmpDouble = (dutyCycleTimerValue * (potPercentage / 100));
+            newTimeOut = (int) tmpDouble;
+            // TMR3_Counter16BitSet(newTimeOut);
+            PR3 = newTimeOut;
+        }
+        //  pwmDutyCycle  = PWM_TicksPerMs + ((PWM_TicksPerMs * potPercentage) / 100);
         // pwmDutyCycle = pwmDutyCycle + PWM_TicksPerMs;
-        sprintf(myString,"%04d - %.02f",potValue,pwmDutyCycle/PWM_TicksPerMs);
+        sprintf(myString,"%05d %05d %03d",dutyCycleTimerValue,newTimeOut,potPercentage);
         displayString(1,0,myString);
     }
     

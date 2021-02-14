@@ -84,12 +84,13 @@
 #include "clock.h"
 #include "system.h"
 #include "cmp1.h"
-#include "tmr2.h"
-#include "tmr1.h"
+#include "tmr3.h"
+#include "adc1.h"
 #include "drivers/timeout.h"
+#include "tmr2.h"
 #include "interrupt_manager.h"
 #include "traps.h"
-#include "adc1.h"
+#include "tmr1.h"
 
 void SYSTEM_Initialize(void)
 {
@@ -99,6 +100,7 @@ void SYSTEM_Initialize(void)
     ADC1_Initialize();
     CMP1_Initialize();
     timeout_initialize();
+    TMR3_Initialize();
     TMR2_Initialize();
     TMR1_Initialize();
 }
