@@ -53,26 +53,19 @@
 #include "mcc_generated_files/mcc.h"
 
 /*
-#define TIME_DATA_BITS_HIGH     2000
-#define TIME_WAIT_BEFOR_E_HIGH  1000
-#define TIME_E_HIGH             500
-#define TIME_E_LOW              4000
-#define TIME_BOOT_DELAY         5000
+ * Timings below can be increased for debugging but all 3 works fine with the Hitachi Display
+ * and are all in MilliSeconds.
+ * 
+ * This is all managed by TMR_1
 */
-/* */
-#define TIME_DATA_BITS_HIGH     3
-#define TIME_WAIT_BEFOR_E_HIGH  3
-#define TIME_E_HIGH             3
-#define TIME_E_LOW              3
-#define TIME_BOOT_DELAY         3
-/* */
-#define PWM_Cycle               200 // 20 Milli Second Cycle
-#define PWM_TicksPerMs          5
 
-/* */
+#define TIME_WAIT_BEFOR_E_HIGH  3       //  Time to wait after the Data Bits are set before the E Signal
+#define TIME_E_HIGH             3       //  Time the E_Signal should be high fore
+#define TIME_E_LOW              3       //  Time the E_Signal should be low before it goes high again (after pulling E Down)
+#define TIME_BOOT_DELAY         3       //  Time it takes for the display to initialize
 /*
  * These two procedure implement my Timer Logic
- * My_ISR fires every 1 ms
+ * My_ISR / TMR_1 fires every 1 ms
  * 
  * - myTimers counts those ticks
  * - waitingForTimer = 1 means we haven't reached the target state
@@ -80,16 +73,8 @@
  */
 
 int16_t     myTimer             =   0;
-int16_t     pwmTimer            =   0;
-int         pwmSignal           =   0;
-double      pwmDutyCycle        =   0;
-int         pwmDutyCycleCount   =   0;
 int         waitingForTimer     =   0;
 int16_t     timerDelayMilliSec  =   0;
-uint16_t    dutyCycleTimerValue =   0;
-uint16_t    potCycleTimerValue  =   0;
-uint16_t    newTimeOut          =   0;
-
 
 void    timerDelay(int16_t waitTime) {
     myTimer             =   0;
@@ -98,8 +83,24 @@ void    timerDelay(int16_t waitTime) {
     while (waitingForTimer) {}
     return;
 }
+
 /*
-Main application
+ * Pulse Width Modulation for most Servo's work at 50Hz 
+ * which is 50 times per second. So 1 Sec / 50 = 0.02 Seconds = 20 Milli Second per Period
+ * TMR_2 fires every (0.0001 Seconds) so you need 200 of those to get 1 Period
+ * TMR_3 Controls the Pulse within this 20Ms period
+ * To read more about PWM: https://dronebotworkshop.com/servo-motors-with-arduino/
+ */
+#define PWM_Period               200 // 20 Milli Second Cycle
+
+
+int16_t     pwmPeriodCounter    =   0;  //  Tick to reach PWM_Period
+uint16_t    defaultPulseWidth   =   0;  //  The default Pulse With as the Timer is configured
+                                        //  used to calculate the new value based on the POT setting
+uint16_t    nextPulseWidth      =   0;  //  The next Pulse Width - based on the POT setting
+
+/*
+ * This timer times out onNextPulseWidth and takes the PWM_Pin low. It defines the Duty Cycle/Pulse Width 
  */
 void My_ISR_TMR3(void) {
     
@@ -108,39 +109,26 @@ void My_ISR_TMR3(void) {
     
 }
 
+/*
+ * This timer increases the pwmPeriodCounter and if we need to start a new period
+ * set the PWM Pin high (until the TMR3 runs out)
+ */
 void My_ISR_TMR2(void) {
-    pwmTimer++;
-    if (pwmTimer >= 10) {
-        // PWM_PIN_SetLow();
-    }
-    
-    if ((pwmTimer > PWM_Cycle) || (pwmTimer == 0))  {
-        pwmTimer = 0;
-        potCycleTimerValue = dutyCycleTimerValue;
-        // TMR3_Period16BitSet(potCycleTimerValue);
+    pwmPeriodCounter++;
+    if ((pwmPeriodCounter > PWM_Period) || (pwmPeriodCounter == 0))  {
+        pwmPeriodCounter = 0;
         PWM_PIN_SetHigh();
         TMR3_Start();
-        // pwmDutyCycleCount   = 0;
-        // pwmDutyCycle = 4;
-    }
-
-    /*
-    pwmDutyCycleCount++;
-    if (pwmDutyCycleCount > pwmDutyCycle) {
-        PWM_PIN_SetLow();
-    }
-     */ 
-    
+    }    
 }
+
+/*
+ See description above this time is mainly for managing the display
+ */
 void My_ISR_TMR1(void) {
     
     myTimer++;
-    /*
-    pwmDutyCycleCount++;
-    if (pwmDutyCycleCount > 1) {
-        PWM_PIN_SetLow();
-    }
-    */
+    
     if (waitingForTimer) {
         if (myTimer > timerDelayMilliSec) {
             myTimer         = 0;
@@ -151,11 +139,7 @@ void My_ISR_TMR1(void) {
 }
 
 /*
- * Timings to Display a Character
- * - Put Data on Data Bus
- * - Wait 200ns to make sure it's present and stable
- * - Pull line E up for at least 450 nano Seconds
- * - Pull line E down for at least 500 nano Seconds
+ * Timings to Display a Character - code says it all
  */
 
 void displayNibble(         int     dataRegister,
@@ -164,6 +148,8 @@ void displayNibble(         int     dataRegister,
     
     //  Switch all lines to Low
     DISPLAY_E_SetLow();
+    
+    //  Is this a command or a display character?
     if (dataRegister) {
         DISPLAY_RS_SetHigh();
     } else
@@ -197,11 +183,7 @@ void displayNibble(         int     dataRegister,
     else {
         DISPLAY_D7_SetLow();
     }
-    
-    //DISPLAY_D5_SetHigh();
-    //DISPLAY_D6_SetHigh();
-    //DISPLAY_D7_SetHigh();
-    
+       
     //  Wait for long enough for the Data bits to be high and present
     timerDelay(TIME_WAIT_BEFOR_E_HIGH);
     DISPLAY_E_SetHigh();
@@ -230,34 +212,41 @@ void displayCharacter ( int  dataRegister,
     displayNibble(  dataRegister,character);
 }
 
+/*
+ * Put a display string on the display on a particular row/column
+ */
 void displayString (int row,
                     int col,
-                    char *myString) {
+                    char *strToDisplay) {
     
     int i = 0;
     char    myChar = 0x00;
-    char    myPos = 0x80 | (row * 0x40) | col;
+    //  Look at Datasheet: https://www.sparkfun.com/datasheets/LCD/HD44780.pdf
+    //  Page 8,9,10
+    char    myPos = 0x80 | (row * 0x40) | col;   
     displayCharacter(0,myPos);   
-    for (i=0;i<strlen(myString);i++) {
-        myChar = myString[i];
+    for (i=0;i<strlen(strToDisplay);i++) {
+        myChar = strToDisplay[i];
         displayCharacter(1,myChar);
     }
     return;
 }
 
+/*
+ * Main Code
+ */
 int main(void)
 {
     // initialize the device
     SYSTEM_Initialize();
     myTimer             = 0;
     TMR1_SetInterruptHandler(My_ISR_TMR1);
-    // TMR1_Start();
+    // TMR1_Start();    //  Not necessary if you enable it in MCC
     
-    pwmTimer = -1;
+    pwmPeriodCounter = -1;
     TMR2_SetInterruptHandler(My_ISR_TMR2);
-    // TMR2_Start();
-    // int displayState    = 0;
-    dutyCycleTimerValue = TMR3_Period16BitGet();
+
+    defaultPulseWidth = TMR3_Period16BitGet();
     TMR3_SetInterruptHandler(My_ISR_TMR3);
 
     //  Initial Delay to wait for the Display to get ready
@@ -272,21 +261,6 @@ int main(void)
     DISPLAY_D5_SetLow();
     DISPLAY_D6_SetLow();
     DISPLAY_D7_SetLow();
-    //  dataRegister, Row, Column, Character
-    //  put display in 4 bit mode
-    
-    //  Init sequence from: http://web.alfredstate.edu/faculty/weimandn/lcd/lcd_initialization/lcd_initialization_index.html
-    //  If you don't do this - re-running the pick doesn't initialize the display properly
-    /*
-    displayNibble(0,0b0011);
-    displayNibble(0,0b0011);
-    displayNibble(0,0b0011);
-    displayNibble(0,0b0010);
-    displayCharacter(0,0b00101000);
-    displayCharacter(0,0b00001000);
-    displayCharacter(0,0b00000001);
-    displayCharacter(0,0b00000110);
-    */
     
     displayNibble(0,0x02);      //  0010 - Lower bit Only - put in 4 bit mode
     displayCharacter(0,0x2C);   //  0010$1100 (4 Bit Mode, 2 Line display)
@@ -294,66 +268,18 @@ int main(void)
     displayCharacter(0,0x0F);   //  0000$1111 (Display On - Blinking Cursor)
     displayCharacter(0,0x01);   //  Clear Display    //displayNibble(0,0x00000001);      //  0010 - Lower bit Only - put in 4 bit mode
     
-    //  Move Cursor (see CGRAM Address)
-    /* */
-    /*
-    unsigned char    myPos = 0x80 | (0 * 0x40) | 0;
-    char    myString[21];
-    sprintf(myString,"myPos %02x",myPos);
-    displayString(0,0,myString);
-     */
-    /*
-    displayCharacter(0,0x80);   //  Line One, Col 0
-    displayCharacter(1,'L');    //  Display Something
-    displayCharacter(1,'e');    //  Display Something
-    displayCharacter(1,'o');    //  Display Something
-    displayCharacter(1,'n');    //  Display Something
-     
-    char    myString[21];
-    strcpy(myString,"Julie de Beer");
-     */
-    // displayString(0,2,"Hello World");
-    // displayString(1,0,"Bye Bye World");
-
-    /*     //  Move Cursor (see CGRAM Address)
-    displayCharacter(0,0xC0);   //  Line One, Col 0
-    displayCharacter(1,'d');    //  Display Something
-    displayCharacter(1,'e');    //  Display Something
-    displayCharacter(1,' ');    //  Display Something
-    displayCharacter(1,'B');    //  Display Something
-    displayCharacter(1,'e');    //  Display Something
-    displayCharacter(1,'e');    //  Display Something
-    displayCharacter(1,'r');    //  Display Something
-    */
-    //  Switch all the LED's off
-    
-    /*
-    DISPLAY_E_SetLow();
-    DISPLAY_RS_SetLow();
-    DISPLAY_D4_SetLow();
-    DISPLAY_D5_SetLow();
-    DISPLAY_D6_SetLow();
-    DISPLAY_D7_SetLow();
-    */
-    
-    char        myString[21];
+    char        strToDisplay[21];  
     uint16_t    potValue;
+    
+    double potPercentage    = 0;    //  Percentage pot is turned from 0 - 100
+    int oldPotPercentage    = 0;    //  last Percentage to avoid having to change TMR_3 all the tiem
+    double   tmpDouble      = 0;
+    int i                   = 0;
+    
     displayString(0,0,"Pot Value");
-    /*
-    while (1)
-    {
-        ADC1_Initialize();
-        potValue=ADC1_GetConversion(POT_AN0);
-        sprintf(myString,"%04d",potValue);
-        displayString(1,0,myString);
-        // Add your application code
-    }
-    */
-    int i   = 0;
-    double potPercentage    = 0;
-    int oldPotPercentage = 0;
-    double   tmpDouble   = 0;
+    
     while (1) {
+        //  Logic to check the A2D port and get the value from the Pot
         ADC1_Initialize();
         ADC1_ChannelSelect(POT_AN0);
         ADC1_Start();
@@ -367,20 +293,26 @@ int main(void)
             ADC1_Tasks();   
         }
         potValue = ADC1_ConversionResultGet();
-        potPercentage = 100 + (potValue / 10.23); // 500 on Pot will give 149%
-                                                  // So 149% of 1ms = 1.49ms
+        
+        //  converted Pot Value can be between 0 - 1023
+        //  So this calculates the percentage it should be above TMR_1 (which is set to 1Ms)
+        //  500 on Pot will give 149%
+        //  So 149% of 1ms = 1.49ms
+        
+        potPercentage = 100 + (potValue / 10.23); 
+                                                  
+        //  Update PR3, the TMR_3 timeout if necessary
+        //  Remember defaultPulseWidth is the value as set by MCC
         
         if (oldPotPercentage != potPercentage) {
             oldPotPercentage = potPercentage;
-            tmpDouble = (dutyCycleTimerValue * (potPercentage / 100));
-            newTimeOut = (int) tmpDouble;
-            // TMR3_Counter16BitSet(newTimeOut);
-            PR3 = newTimeOut;
+            tmpDouble = (defaultPulseWidth * (potPercentage / 100));
+            nextPulseWidth = (int) tmpDouble;
+            PR3 = nextPulseWidth;
         }
-        //  pwmDutyCycle  = PWM_TicksPerMs + ((PWM_TicksPerMs * potPercentage) / 100);
-        // pwmDutyCycle = pwmDutyCycle + PWM_TicksPerMs;
-        sprintf(myString,"%05d %05d %03d",dutyCycleTimerValue,newTimeOut,potPercentage);
-        displayString(1,0,myString);
+        //  Display some stuff on the display and start again
+        sprintf(strToDisplay,"%05d %05d %03f",defaultPulseWidth,nextPulseWidth,potPercentage);
+        displayString(1,0,strToDisplay);
     }
     
     return 1;
