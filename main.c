@@ -76,6 +76,7 @@
 int16_t     myTimer             =   0;
 int         waitingForTimer     =   0;
 int16_t     timerDelayMilliSec  =   0;
+#define     INVERSE_PULSE       1
 
 void    timerDelay(int16_t waitTime) {
     myTimer             =   0;
@@ -106,8 +107,12 @@ uint16_t    nextPulseWidth      =   0;  //  The next Pulse Width - based on the 
 void My_ISR_TMR3(void) {
     
     TMR3_Stop();
-    PWM_PIN_SetLow();
-    
+    if (INVERSE_PULSE) {
+        PWM_PIN_SetHigh();
+    }
+    else {
+        PWM_PIN_SetLow();
+    }
 }
 
 /*
@@ -118,7 +123,12 @@ void My_ISR_TMR2(void) {
     pwmPeriodCounter++;
     if ((pwmPeriodCounter > PWM_Period) || (pwmPeriodCounter == 0))  {
         pwmPeriodCounter = 0;
-        PWM_PIN_SetHigh();
+        if (INVERSE_PULSE) {
+            PWM_PIN_SetLow();
+        }
+        else {
+            PWM_PIN_SetHigh();
+        }
         TMR3_Start();
     }    
 }
