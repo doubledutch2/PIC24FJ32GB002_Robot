@@ -124,7 +124,7 @@ void My_ISR_TMR2(void) {
     if ((pwmPeriodCounter > PWM_Period) || (pwmPeriodCounter == 0))  {
         pwmPeriodCounter = 0;
         if (INVERSE_PULSE) {
-            PWM_PIN_SetLow();
+            PWM_PIN_SetLow(); 
         }
         else {
             PWM_PIN_SetHigh();
